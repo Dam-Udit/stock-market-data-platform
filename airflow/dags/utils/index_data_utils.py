@@ -1,8 +1,9 @@
 import pandas as pd
+import datetime
 import yfinance as yf
 import enum
-import datetime
-import sqlite3
+from sqlalchemy import create_engine
+
 
 class Duration(enum.Enum):
     ONE_DAY = "1d"
@@ -14,6 +15,7 @@ class Duration(enum.Enum):
     ONE_YEAR = "1y"
     THREE_YEARS = "3y"
     FIVE_YEARS = "5y"
+
 
 class YahooFinanceAPI:
     def __init__(self):
@@ -32,7 +34,7 @@ class YahooFinanceAPI:
         elif duration == "3m":
             start_date = today - datetime.timedelta(days=90)
         elif duration == "6m":
-            start_date = today - datetime.timedelta(days=182)
+            start_date = today - datetime.timedelta(days=180)
         elif duration == "1y":
             start_date = today - datetime.timedelta(days=365)
         elif duration == "3y":
@@ -43,12 +45,11 @@ class YahooFinanceAPI:
             raise ValueError("Invalid duration")
         return start_date, today
 
-    def get_stock_data(self, ticker, duration):
+    def get_data(self, ticker, duration):
         start_date, end_date = self.__get_dates(duration)
         data = yf.download(ticker, start=start_date, end=end_date)
-        data.reset_index(inplace=True)
         data.rename(columns={
-            "Date": "date",
+            "Date": "Date",
             "Open": "open",
             "High": "high",
             "Low": "low",
@@ -56,20 +57,19 @@ class YahooFinanceAPI:
             "Adj Close": "adj_close",
             "Volume": "volume"
         }, inplace=True)
+        data['returns'] = data['adj_close'].pct_change()
+        data.dropna(inplace=True)
         return data
 
 
 class SQLRepository:
-    def __init__(self, db_name):
-        self.connection = sqlite3.connect(db_name)
+    def __init__(self, engine):
+        self.engine = engine
 
-    def insert_table(self, table_name, records, if_exists='fail'):
+    def insert_data(self, table_name, records, if_exists="fail"):
         n_inserted = records.to_sql(
-            name=table_name,
-            con=self.connection,
-            if_exists=if_exists,
-            index=False
-        )
+            name=table_name, con=self.engine, if_exists=if_exists, index=False)
+
         return {
             "transactions_successful": True,
             "records_inserted": n_inserted
@@ -77,21 +77,10 @@ class SQLRepository:
 
     def read_table(self, table_name, limit=None):
         if limit:
-            sql = f"SELECT * FROM '{table_name}' LIMIT {limit}"
+            sql = f"SELECT * FROM {table_name} ORDER BY date DESC LIMIT {limit}"
         else:
-            sql = f"SELECT * FROM '{table_name}'"
+            sql = f"SELECT * FROM {table_name} ORDER BY date DESC"
 
-        df = pd.read_sql(sql=sql, con=self.connection, parse_dates=["date"], index_col="date")
+        df = pd.read_sql(sql=sql, con=self.engine, parse_dates=[
+                         "date"], index_col="date")
         return df
-
-# Test if everything works:
-if __name__ == "__main__":
-    api = YahooFinanceAPI()
-    data = api.get_stock_data("ITC.NS", "3y")
-    
-    repo = SQLRepository("stocks_data.db")
-    insert_result = repo.insert_table("stock_data", data, if_exists="replace")
-    print(insert_result)
-
-    retrieved_data = repo.read_table("stock_data", limit=5)
-    print(retrieved_data)
